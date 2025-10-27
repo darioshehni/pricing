@@ -23,24 +23,45 @@ def grid_search_best_price(
 ) -> float:
     lo = p0 * cfg.price_bounds_pct[0]
     hi = p0 * cfg.price_bounds_pct[1]
-    grid = np.linspace(lo, hi, cfg.n_grid)
+    raw = np.linspace(lo, hi, cfg.n_grid)
 
-    profits = []
-    prices = []
-    for p in grid:
+    # Snap first and de-duplicate
+    if cfg.enforce_price_ending and cfg.price_ending is not None:
+        snapped = [
+            round_to_price_ending(p, cfg.price_ending, policy=getattr(cfg, "price_ending_policy", "down"))
+            for p in raw
+        ]
+    else:
+        snapped = [round(p, 2) for p in raw]
+
+    candidates = sorted(set(snapped))
+
+    # Filter feasibility AFTER snapping
+    feas: list[float] = []
+    for p in candidates:
         if p < cost + cfg.min_margin_abs:
             continue
-        p_eval = p
+        if p < lo or p > hi:
+            continue
+        feas.append(p)
+
+    if not feas:
+        # Safe fallback inside bounds and above cost+margin
+        fallback = max(cost + cfg.min_margin_abs, lo)
         if cfg.enforce_price_ending and cfg.price_ending is not None:
-            p_eval = round_to_price_ending(p, cfg.price_ending)
-        profits.append(profit_at_price(p_eval, alpha, beta, cost))
-        prices.append(p_eval)
+            fallback = round_to_price_ending(
+                fallback, cfg.price_ending, policy=getattr(cfg, "price_ending_policy", "down")
+            )
+        return float(min(max(fallback, lo), hi))
 
-    if not profits:
-        return clamp(cost + 0.01, lo, hi)
+    # Evaluate profits on feasible snapped candidates
+    best_p, best_pi = None, -1e18
+    for p in feas:
+        pi = profit_at_price(p, alpha, beta, cost)
+        if pi > best_pi:
+            best_p, best_pi = p, pi
 
-    idx = int(np.argmax(profits))
-    return float(prices[idx])
+    return float(best_p)
 
 def recommend_prices(
     calib_df: pd.DataFrame,  # columns: sku_id, model, p0, q0, beta, alpha
@@ -68,18 +89,29 @@ def recommend_prices(
         hi = p0 * cfg.price_bounds_pct[1]
 
         p_lerner = lerner_price(cost, beta)
-        use_lerner = (
+        use_lerner_rule = (
             p_lerner is not None
             and (not cfg.require_elasticity_gt_one or abs(beta) > 1.0)
-            and lo <= p_lerner <= hi
-            and p_lerner >= cost + cfg.min_margin_abs
         )
 
-        if use_lerner:
-            p_star = p_lerner
-            if cfg.enforce_price_ending and cfg.price_ending is not None:
-                p_star = round_to_price_ending(p_star, cfg.price_ending)
-            method = "lerner"
+        if use_lerner_rule:
+            # Pre-snap feasibility
+            if (p_lerner >= cost + cfg.min_margin_abs) and (lo <= p_lerner <= hi):
+                p_star_raw = p_lerner
+                p_star = p_star_raw
+                if cfg.enforce_price_ending and cfg.price_ending is not None:
+                    p_star = round_to_price_ending(
+                        p_star_raw, cfg.price_ending, policy=getattr(cfg, "price_ending_policy", "down")
+                    )
+                # Post-snap feasibility re-check
+                if (p_star >= cost + cfg.min_margin_abs) and (lo <= p_star <= hi):
+                    method = "lerner"
+                else:
+                    p_star = grid_search_best_price(p0, alpha, beta, cost, cfg)
+                    method = "grid"
+            else:
+                p_star = grid_search_best_price(p0, alpha, beta, cost, cfg)
+                method = "grid"
         else:
             p_star = grid_search_best_price(p0, alpha, beta, cost, cfg)
             method = "grid"

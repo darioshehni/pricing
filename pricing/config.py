@@ -14,6 +14,7 @@ class Config:
     n_grid: int = 121                                      # grid resolution
     price_ending: float = 0.99                             # psychological ending
     enforce_price_ending: bool = True
+    price_ending_policy: str = "down"                      # "down" | "nearest" | "up"
 
     # Guards
     min_margin_abs: float = 0.0            # don't price below cost

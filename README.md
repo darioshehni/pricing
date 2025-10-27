@@ -24,7 +24,7 @@ Output:
 2) Calibrate demand scale (α) per SKU so today’s point lies on the curve (isoelastic).
 3) Compute a closed‑form candidate (Lerner) when usable: if |β|>1, compute a price based on β and C.
 4) Accept the candidate only if it’s within relative bounds around p0 and above cost; otherwise, scan a bounded grid around p0 and pick the most profitable price.
-5) Snap to a .99 ending and re‑check bounds and margin (don’t price below cost).
+5) Snap to a .99 ending and re‑check bounds and margin (don’t price below cost). Default snap policy is "down" (round down to the prior .99); configurable in `pricing/config.py`.
 6) Output a CSV with the recommended price per SKU, the method used (lerner/grid), and lift vs current price.
 
 ## Algorithms
@@ -32,10 +32,10 @@ Output:
 - β (elasticity): from MMM at model level; mapped to each SKU by its `model`.
 - α calibration (per SKU): `α = q0 / (p0**β)` so `(p0,q0)` lies on the curve.
 - Profit: `π(P) = (P − C) · α · (P**β)` where `C` is marginal unit cost.
-- Bounds: `[p0*lo, p0*hi]` (relative to current price; see `pricing/config.py`).
+- Bounds: `[p0*lo, p0*hi]` (relative to current price; see `pricing/config.py`). Post‑snap feasibility is enforced.
 - Lerner candidate (only if `abs(β) > 1`): `P* = (|β|/(|β|−1)) · C`.
-  - Use only if within bounds and `P* ≥ C + min_margin_abs`; after snapping to `.99`, re‑validate feasibility.
-- Grid fallback: evaluate `π(P)` across a grid in `[p0*lo, p0*hi]`; for each candidate, snap to `.99`, enforce margin, and choose the highest‑profit feasible price (ties handled by the maximization).
+  - Use only if within bounds and `P* ≥ C + min_margin_abs`; after snapping to `.99`, feasibility is re‑validated and falls back to grid if violated.
+- Grid fallback: evaluate `π(P)` across a grid in `[p0*lo, p0*hi]`; snap each candidate to `.99`, then enforce bounds and margin, and choose the highest‑profit feasible price (ties handled by the maximization).
 
 ## Results
 1) Cost Sensitivity
@@ -65,10 +65,13 @@ Output:
 - `data/sku_daily.csv`: one snapshot row per SKU (`date, sku_id, model, price, sales`).
 - `data/model_elasticity.csv`: model‑level elasticity mapping (`model, beta`).
 - `data/sku_costs.csv`: marginal unit cost per SKU (`sku_id, unit_cost`).
-- `pricing/config.py`: configuration (paths, bounds, grid density, .99 ending, min margin).
+- `pricing/config.py`: configuration (paths, bounds, grid density, .99 ending, min margin, `price_ending_policy`).
 - `pricing/io.py`: CSV loading helpers.
 - `pricing/demand.py`: demand calibration and profit computation.
 - `pricing/optimizer.py`: price selection (Lerner when feasible, else grid search).
-- `pricing/utils.py`: rounding (.99) and clamp utilities.
+- `pricing/utils.py`: rounding (.99) and clamp utilities. Rounding API: `round_to_price_ending(p, ending=0.99, policy="down|nearest|up")`.
+
+## Notes on Guards
+- α calibration guard: if `p0 <= 0` or `q0 <= 0`, α falls back to a small positive number to avoid division errors. Investigate such rows upstream.
 - `main.py`: orchestrates the full pipeline and writes the CSV.
 - `run.sh`: convenience script to set up a venv and run.
